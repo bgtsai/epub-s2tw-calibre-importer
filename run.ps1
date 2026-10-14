@@ -1,5 +1,5 @@
 ﻿# ============================================================
-# Version: 1.0.2
+# Version: 1.0.3
 # ============================================================
 # EPUB 簡轉繁 + 匯入 Calibre 主流程
 #
@@ -54,7 +54,7 @@ $ConvertScript = Join-Path $ScriptDir 'convert_epub.py'
 # 版本號顯示在視窗標題，一開視窗就看得到，不用點任何按鈕或捲動記錄——
 # 這樣才能一眼判斷手上這份是不是真的抓到最新版，而不是下載到舊檔案或
 # 半途失敗的殘留（先前已發生過抓到 GitHub 404 錯誤頁的案例，見 27_技術雜記）
-$script:ScriptVersion = '1.0.2'
+$script:ScriptVersion = '1.0.3'
 
 # ---------- 設定檔與環境 ----------
 
@@ -497,6 +497,36 @@ function Invoke-Workflow {
 }
 
 # ---------- 讀取設定 ----------
+
+# 設定檔慣例：發布包只附 config.example.ini（範本），使用者實際修改的是 config.ini。
+# 更新時整包覆蓋只會蓋到範本，不會蓋掉使用者自己的設定。
+# 沒有 config.ini（例如沒跑 install.ps1 直接執行）就從範本複製一份並開啟記事本。
+$ConfigExamplePath = Join-Path $ScriptDir 'config.example.ini'
+$PlaceholderText = '<你的路徑>'
+if (-not (Test-Path -LiteralPath $ConfigPath) -and (Test-Path -LiteralPath $ConfigExamplePath)) {
+    Copy-Item -LiteralPath $ConfigExamplePath -Destination $ConfigPath
+    Start-Process -FilePath 'notepad.exe' -ArgumentList "`"$ConfigPath`""
+    [System.Windows.Forms.MessageBox]::Show(
+        "第一次使用，已建立設定檔並用記事本開啟：`n$ConfigPath`n`n請把裡面的「$PlaceholderText」改成你自己的資料夾，存檔後再執行一次。",
+        '請先完成設定',
+        [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+    exit 0
+}
+
+# 還留著範本佔位字樣 = 尚未設定。直接提示，不要讓後面報「資料夾不存在」這種看不懂的錯
+if (Test-Path -LiteralPath $ConfigPath) {
+    $unsetLines = @(Get-Content -LiteralPath $ConfigPath -Encoding UTF8 |
+        Where-Object { $_.Trim() -notmatch '^[;#]' -and $_.Contains($PlaceholderText) })
+    if ($unsetLines.Count -gt 0) {
+        Start-Process -FilePath 'notepad.exe' -ArgumentList "`"$ConfigPath`""
+        [System.Windows.Forms.MessageBox]::Show(
+            "設定檔還沒改完，以下設定仍是範本的「$PlaceholderText」：`n`n" + ($unsetLines -join "`n") +
+            "`n`n已用記事本開啟 config.ini，請改成你自己的資料夾，存檔後再執行一次。",
+            '請先完成設定',
+            [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        exit 0
+    }
+}
 
 try {
     $ini = Read-IniConfig -Path $ConfigPath

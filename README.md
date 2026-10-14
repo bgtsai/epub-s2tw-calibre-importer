@@ -26,11 +26,16 @@ into Calibre with `calibredb`. The UI and documentation are in Traditional Chine
 
 ## 快速開始
 
-1. 下載本 repo 全部檔案放在同一個資料夾。
-2. 把 `config.example.ini` 複製成 `config.ini`,依註解把 `<你的路徑>` 改成你自己的資料夾。
-3. 若檔案是從網路下載的,先在每個 `.ps1` 上按右鍵 → 內容 → 勾選「解除封鎖」。
-4. 以系統管理員身分執行 `install.ps1`(首次安裝,見下節)。
-5. 之後點捷徑或執行 `run.ps1` 即可。
+1. 到 [Releases](https://github.com/bgtsai/epub-s2tw-calibre-importer/releases) 下載最新的 zip,解壓到你想放的位置。
+2. 若檔案是從網路下載的,先在每個 `.ps1` 上按右鍵 → 內容 → 勾選「解除封鎖」。
+3. 以系統管理員身分執行 `install.ps1`(首次安裝,見下節)。安裝最後會自動建立 `config.ini` 並用記事本開啟,把 `<你的路徑>` 改成你的資料夾後存檔。
+4. 之後點捷徑或執行 `run.ps1` 即可。
+
+## 更新到新版
+
+下載新版 zip,解壓後**整包覆蓋**到原本的資料夾即可。發布包裡只有範本 `config.example.ini`,
+不含 `config.ini`,所以你的設定不會被蓋掉。不需要重新執行 `install.ps1`
+(除非新版說明有特別註明)。視窗標題列會顯示版本號,可以確認是否更新成功。
 
 ## 首次安裝
 
@@ -43,7 +48,9 @@ into Calibre with `calibredb`. The UI and documentation are in Traditional Chine
 
 ## 使用前設定
 
-編輯 `config.ini`(由 `config.example.ini` 複製而來;`config.ini` 已列入 `.gitignore`,不會被上傳)。
+`install.ps1` 安裝完成時(或第一次執行 `run.ps1` 時)會從範本 `config.example.ini` 自動建立 `config.ini` 並用記事本開啟,把裡面的 `<你的路徑>` 改成你自己的資料夾、存檔即可。設定還沒改完就執行,程式會列出還沒改的項目並重新開啟記事本。
+
+**請修改 `config.ini`,不要改 `config.example.ini`**——範本在更新時會被覆蓋,`config.ini` 不在發布包裡,更新不會動到它。
 檔案內每個設定都有中文註解說明用途,主要有:
 - `SourceFolder1`(可依序加 `SourceFolder2`、`SourceFolder3` ... 支援多個來源)
 - `StagingFolder`(暫存待轉換,即文件裡的資料夾 A)

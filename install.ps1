@@ -1,5 +1,5 @@
 ﻿# ============================================================
-# Version: 1.0.2
+# Version: 1.0.3
 # ============================================================
 # 安裝腳本：檢查/安裝 Python 與 opencc-python-reimplemented，並在腳本所在目錄產生捷徑
 #
@@ -9,7 +9,7 @@
 # 全系統安裝需要系統管理員權限，未以管理員身分執行時會自動重新以管理員身分啟動一次。
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$script:ScriptVersion = '1.0.2'   # 對照 run.ps1 標題列的版本，確認抓到的是同一批檔案
+$script:ScriptVersion = '1.0.3'   # 對照 run.ps1 標題列的版本，確認抓到的是同一批檔案
 $PythonInstallerVersion = '3.12.7'
 $PythonInstallerUrl = "https://www.python.org/ftp/python/$PythonInstallerVersion/python-$PythonInstallerVersion-amd64.exe"
 
@@ -120,6 +120,25 @@ try {
     $shortcut.Save()
 
     Write-Output "捷徑已建立：$shortcutPath"
+
+    # --- 步驟 5：建立使用者自己的設定檔 config.ini ---
+    # 發布包只附範本 config.example.ini，更新時整包覆蓋不會蓋掉使用者的 config.ini。
+    # 已經有 config.ini（重複安裝或更新）就不動它。
+    $configPath = Join-Path $ScriptDir 'config.ini'
+    $configExamplePath = Join-Path $ScriptDir 'config.example.ini'
+    if (Test-Path -LiteralPath $configPath) {
+        Write-Output "已有設定檔，保留不動：$configPath"
+    }
+    elseif (Test-Path -LiteralPath $configExamplePath) {
+        Copy-Item -LiteralPath $configExamplePath -Destination $configPath
+        Write-Output "已建立設定檔：$configPath"
+        Write-Output '已用記事本開啟，請把裡面的「<你的路徑>」改成你自己的資料夾後存檔。'
+        Start-Process -FilePath 'notepad.exe' -ArgumentList "`"$configPath`""
+    }
+    else {
+        Write-Output '找不到 config.example.ini，請確認下載的檔案是否完整。'
+    }
+
     Write-Output '安裝完成，可以把這個捷徑搬到桌面或任何想放的位置。'
 }
 catch {
