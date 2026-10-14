@@ -1,5 +1,5 @@
 ﻿# ============================================================
-# Version: 1.0.3
+# Version: 1.0.4
 # ============================================================
 # EPUB 簡轉繁 + 匯入 Calibre 主流程
 #
@@ -54,7 +54,7 @@ $ConvertScript = Join-Path $ScriptDir 'convert_epub.py'
 # 版本號顯示在視窗標題，一開視窗就看得到，不用點任何按鈕或捲動記錄——
 # 這樣才能一眼判斷手上這份是不是真的抓到最新版，而不是下載到舊檔案或
 # 半途失敗的殘留（先前已發生過抓到 GitHub 404 錯誤頁的案例，見 27_技術雜記）
-$script:ScriptVersion = '1.0.3'
+$script:ScriptVersion = '1.0.4'
 
 # ---------- 設定檔與環境 ----------
 
@@ -399,6 +399,10 @@ function Invoke-Workflow {
                 # 來源本身就壞了，不是轉換造成的 -> 留在暫存資料夾原地不動，
                 # 方便使用者直接打開檢查（錯誤資料夾只放「我們轉壞的」）
                 Write-Log "  -> 來源本身損壞，留在暫存資料夾" 'DarkOrange'
+                # 白話說明（缺哪一章、是否下載不完整等）直接列在該書底下
+                foreach ($detail in @($result.details)) {
+                    if ($detail) { Write-Log "     $detail" 'DarkOrange' }
+                }
                 $brokenCount++
                 $problemDetail = if ($result.problems) { ' | ' + ($result.problems -join '; ') } else { '' }
                 $errorList.Add("[來源本身損壞-留在暫存資料夾] $($f.Name): $($result.reason)$problemDetail")

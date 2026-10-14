@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # ============================================================
-# Version: 1.0.3
+# Version: 1.0.4
 # ============================================================
 """
 EPUB 簡轉繁核心轉換與完整性驗證工具
@@ -65,7 +65,7 @@ import posixpath
 from urllib.parse import unquote, urlparse
 
 # 對照 run.ps1 視窗標題的版本號，確認三個檔案抓到的是同一批
-SCRIPT_VERSION = '1.0.3'
+SCRIPT_VERSION = '1.0.4'
 
 try:
     from opencc import OpenCC
@@ -122,6 +122,8 @@ class LenientZip:
     def _scan(self):
         b = self._buf
         p = 0
+        if b[:4] != b'PK\x03\x04':
+            raise EpubSourceError('檔案開頭不是 zip 格式，可能不是 EPUB 或檔案已嚴重損毀')
         while b[p:p + 4] == b'PK\x03\x04':
             if p + 30 > len(b):
                 raise EpubSourceError('本地檔頭被截斷')
@@ -306,6 +308,106 @@ def check_integrity(zf):
     return fatal, nonfatal
 
 
+# ---------- 給人看的損壞說明（v1.0.4） ----------
+# check_integrity 回傳的是技術訊息（檔名、解析路徑），這裡另外產生白話說明給 Log 用：
+# 缺正文時查書內目錄找出章節標題與閱讀順序位置，讓使用者不用自己拆檔就知道壞在哪。
+
+NAV_LINK_PATTERN = re.compile(r'<a\b[^>]*\bhref="([^"]+)"[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
+NCX_POINT_PATTERN = re.compile(r'<navLabel>\s*<text>(.*?)</text>\s*</navLabel>\s*<content\b[^>]*\bsrc="([^"]+)"',
+                               re.IGNORECASE | re.DOTALL)
+TAG_PATTERN = re.compile(r'<[^>]+>')
+
+
+def _clean_title(raw):
+    text = TAG_PATTERN.sub('', raw)
+    text = re.sub(r'\s+', ' ', text.replace('\u3000', ' ')).strip()
+    return text[:60]
+
+
+def _toc_titles(zf, names):
+    """從 nav（.xhtml/.html）與 toc.ncx 收集「檔案路徑 -> 第一個標題」。查不到就是空 dict。"""
+    titles = {}
+    for name in names:
+        low = name.lower()
+        try:
+            if low.endswith('.ncx'):
+                content = zf.read(name).decode('utf-8', errors='replace')
+                pairs = [(src, t) for t, src in NCX_POINT_PATTERN.findall(content)]
+            elif low.endswith(('.xhtml', '.html', '.htm')) and ('toc' in low or 'nav' in low):
+                content = zf.read(name).decode('utf-8', errors='replace')
+                pairs = NAV_LINK_PATTERN.findall(content)
+            else:
+                continue
+        except Exception:
+            continue
+        base_dir = posixpath.dirname(name)
+        for href, raw_title in pairs:
+            resolved = resolve_ref(base_dir, href)
+            title = _clean_title(raw_title)
+            if resolved and title and resolved not in titles:
+                titles[resolved] = title
+    return titles
+
+
+def describe_source_problems(zf, fatal, nonfatal):
+    """把致命問題翻成白話，回傳 list[str]。任何解析失敗都退回原始訊息，不能讓說明本身出錯。"""
+    details = []
+    try:
+        names = set(zf.namelist())
+        if 'META-INF/container.xml' not in names:
+            return ['不是合法的 EPUB：缺少 META-INF/container.xml（書的入口設定檔）']
+        container = zf.read('META-INF/container.xml').decode('utf-8', errors='replace')
+        rootfiles = ROOTFILE_PATTERN.findall(container)
+        if not rootfiles:
+            return ['不是合法的 EPUB：container.xml 沒有指出書的主設定檔（OPF）在哪裡']
+        titles = None
+        missing_chapters = 0
+        for opf_path in rootfiles:
+            if opf_path not in names:
+                details.append(f'找不到書的主設定檔（OPF）：{opf_path}')
+                continue
+            opf_dir = posixpath.dirname(opf_path)
+            opf_content = zf.read(opf_path).decode('utf-8', errors='replace')
+            manifest = parse_manifest(opf_content)
+            spine = SPINE_ITEMREF_PATTERN.findall(opf_content)
+            for pos, item_id in enumerate(spine, 1):
+                href = manifest.get(item_id)
+                if not href:
+                    continue
+                resolved = resolve_ref(opf_dir, href)
+                if resolved and resolved not in names:
+                    if titles is None:
+                        titles = _toc_titles(zf, names)
+                    title = titles.get(resolved)
+                    label = f'「{title}」' if title else '（目錄裡查不到標題）'
+                    details.append(f'缺少正文{label}：閱讀順序第 {pos} 項（共 {len(spine)} 項），檔案 {href} 不存在')
+                    missing_chapters += 1
+        if missing_chapters:
+            details.append('提示：Calibre 等閱讀器仍打得開這本書，但會直接跳過缺少的部分')
+    except Exception:
+        details = []
+    if not details:
+        details = list(fatal)
+    if nonfatal:
+        details.append(f'另有 {len(nonfatal)} 處非致命的失效參照（缺圖、目錄連結等，不影響判定，完整清單見最後的問題清單）')
+    return details
+
+
+def describe_open_error(message):
+    """開檔失敗（含寬鬆讀取也救不回來）的白話說明。"""
+    if '截斷' in message:
+        return ['檔案被截斷，可能下載不完整']
+    if 'CRC' in message or '解壓縮失敗' in message:
+        m = re.search(r'(?:解壓縮失敗|CRC／大小不符): ([^（）]+)', message)
+        where = f'：{m.group(1).strip()}' if m else ''
+        return [f'壓縮檔內的資料已毀損{where}，無法安全修復']
+    if '開頭不是 zip' in message:
+        return ['不是 EPUB／zip 檔案，或檔案已嚴重損毀（可能下載到錯誤頁面或檔案不完整）']
+    if '加密' in message:
+        return ['檔案含加密內容（可能有 DRM），無法讀取']
+    return [message or '不是合法的 zip / epub 檔案（可能已損毀）']
+
+
 def compute_kana_density(zf):
     """整本書層級的日文假名密度 = 假名字元數 / (假名 + 漢字字元數)。"""
     kana = 0
@@ -335,7 +437,8 @@ def convert_epub(input_path, output_path, cc_config='s2twp'):
             # 留在暫存資料夾讓使用者自己打開檢查（責任歸屬用資料夾位置區分）
             return {'status': 'source_broken',
                     'reason': '來源檔案本身結構損壞（轉換前檢查即不通過）',
-                    'problems': pre_fatal}
+                    'problems': pre_fatal,
+                    'details': describe_source_problems(zf, pre_fatal, pre_nonfatal)}
 
         density = compute_kana_density(zf)
         if density > KANA_THRESHOLD:
@@ -459,15 +562,19 @@ def main():
     if mode == 'check':
         input_path = sys.argv[2]
         repaired = False
+        details = []
         try:
             with open_epub(input_path) as zf:
                 repaired = bool(getattr(zf, 'repaired', False))
                 fatal, nonfatal = check_integrity(zf)
+                if fatal:
+                    details = describe_source_problems(zf, fatal, nonfatal)
         except (EpubSourceError, zipfile.BadZipFile, zlib.error, NotImplementedError, EOFError, KeyError) as ex:
             fatal, nonfatal = [str(ex) or '不是合法的 zip / epub 檔案（可能已損毀）'], []
+            details = describe_open_error(str(ex))
         if fatal:
             result = {'status': 'source_broken', 'reason': '來源檔案本身結構損壞',
-                      'problems': fatal, 'nonfatal': nonfatal}
+                      'problems': fatal, 'nonfatal': nonfatal, 'details': details}
         else:
             result = {'status': 'ok', 'nonfatal': nonfatal}
             if repaired:
@@ -485,7 +592,8 @@ def main():
             # 來源讀不了（含寬鬆模式也救不回來）= 來源損壞，不是轉換造成的
             result = {'status': 'source_broken',
                       'reason': '來源檔案本身結構損壞（轉換前即無法讀取）',
-                      'problems': [str(ex) or '不是合法的 zip / epub 檔案（可能已損毀）']}
+                      'problems': [str(ex) or '不是合法的 zip / epub 檔案（可能已損毀）'],
+                      'details': describe_open_error(str(ex))}
 
     elif mode == 'convert_name':
         # 只轉換一段文字（外層檔名主體，不含副檔名），不碰任何檔案。
