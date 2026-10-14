@@ -1,0 +1,58 @@
+# 推送到 main 時自動發布 Release：
+# 讀三支腳本開頭的版本號（必須一致），該版本還沒有 Release 就打包 zip 並發布。
+# 說明文字取自 .github/release-notes/v{版本}.md，沒有該檔就用預設文字。
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 讀取版本號
+        id: ver
+        run: |
+          v_run=$(grep -m1 -oP '^# Version: \K[0-9.]+' run.ps1)
+          v_ins=$(grep -m1 -oP '^# Version: \K[0-9.]+' install.ps1)
+          v_py=$(grep -m1 -oP '^# Version: \K[0-9.]+' convert_epub.py)
+          echo "run.ps1=$v_run install.ps1=$v_ins convert_epub.py=$v_py"
+          if [ "$v_run" != "$v_ins" ] || [ "$v_run" != "$v_py" ]; then
+            echo "::error::三支腳本版本號不一致"; exit 1
+          fi
+          echo "version=$v_run" >> "$GITHUB_OUTPUT"
+
+      - name: 檢查是否已發布
+        id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.ver.outputs.version }}" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"; echo "v${{ steps.ver.outputs.version }} 已存在，略過"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 打包並發布
+        if: steps.exists.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          N="epub-s2tw-calibre-importer-v$V"
+          mkdir "$N"
+          cp run.ps1 install.ps1 convert_epub.py config.example.ini README.md LICENSE "$N/"
+          zip -r "$N.zip" "$N"
+          NOTES=".github/release-notes/v$V.md"
+          if [ ! -f "$NOTES" ]; then
+            NOTES=/tmp/notes.md
+            echo "下載下方 Assets 的 $N.zip，解壓後依 README 操作。更新時整包覆蓋即可，不會蓋掉你的 config.ini。" > "$NOTES"
+          fi
+          gh release create "v$V" "$N.zip" --target "$GITHUB_SHA" --title "v$V" --notes-file "$NOTES"
