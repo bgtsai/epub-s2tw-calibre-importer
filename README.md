@@ -73,6 +73,14 @@ into Calibre with `calibredb`. The UI and documentation are in Traditional Chine
 正在轉換的那一本（避免產生半成品）。按下停止後不會匯入 Calibre，已經
 轉好的檔案留在資料夾 B，下次執行時會一併匯入。
 
+## 執行記錄與 Calibre
+
+- 每次執行的 Log 會存到程式資料夾的 `logs\`(檔名為執行時間),只保留最近 30 份,方便事後核對。
+- 匯入前如果 Calibre 正開著,會先提示關閉。Calibre 開著時 `calibredb` 無法安全寫入同一個書庫;
+  選「取消」則略過匯入,檔案留到下次。
+- 若 Calibre 設定了「自動新增」(偏好設定 → 新增書籍 → 自動新增)監看轉換完成資料夾,
+  Calibre 會自己取走檔案,建議清空該設定,交給本程式匯入。
+
 ## 中斷安全性
 
 來源檔案全程唯讀，不會被就地改寫。轉換的產出先寫成暫存檔（`.epub.tmp`），

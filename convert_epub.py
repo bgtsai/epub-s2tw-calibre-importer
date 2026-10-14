@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # ============================================================
-# Version: 1.0.4
+# Version: 1.0.5
 # ============================================================
 """
 EPUB 簡轉繁核心轉換與完整性驗證工具
@@ -65,7 +65,7 @@ import posixpath
 from urllib.parse import unquote, urlparse
 
 # 對照 run.ps1 視窗標題的版本號，確認三個檔案抓到的是同一批
-SCRIPT_VERSION = '1.0.4'
+SCRIPT_VERSION = '1.0.5'
 
 try:
     from opencc import OpenCC

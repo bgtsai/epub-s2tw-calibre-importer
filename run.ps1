@@ -1,5 +1,5 @@
 ﻿# ============================================================
-# Version: 1.0.4
+# Version: 1.0.5
 # ============================================================
 # EPUB 簡轉繁 + 匯入 Calibre 主流程
 #
@@ -54,7 +54,7 @@ $ConvertScript = Join-Path $ScriptDir 'convert_epub.py'
 # 版本號顯示在視窗標題，一開視窗就看得到，不用點任何按鈕或捲動記錄——
 # 這樣才能一眼判斷手上這份是不是真的抓到最新版，而不是下載到舊檔案或
 # 半途失敗的殘留（先前已發生過抓到 GitHub 404 錯誤頁的案例，見 27_技術雜記）
-$script:ScriptVersion = '1.0.4'
+$script:ScriptVersion = '1.0.5'
 
 # ---------- 設定檔與環境 ----------
 
@@ -169,6 +169,16 @@ function Write-Log {
     $script:logBox.AppendText($Message + [Environment]::NewLine)
     $script:logBox.SelectionColor = $script:logBox.ForeColor
     $script:logBox.ScrollToCaret()
+    # 同步寫入 Log 檔（v1.0.5）：視窗關掉後仍能核對當時實際印了什麼。
+    # 寫檔失敗（例如磁碟權限）不能拖垮主流程，只停用後續寫檔
+    if ($script:logFile) {
+        try {
+            Add-Content -LiteralPath $script:logFile -Value $Message -Encoding UTF8
+        }
+        catch {
+            $script:logFile = $null
+        }
+    }
     # 工作跟 UI 在同一個執行緒，不主動讓出控制權的話畫面不會更新，
     # 看起來就會像整個程式當掉（先前黑視窗「沒反應」的觀感問題）
     [System.Windows.Forms.Application]::DoEvents()
@@ -220,7 +230,23 @@ function Move-EpubsToStaging {
 function Invoke-Workflow {
     param([string]$Mode)
 
-    Write-Log "=== 開始執行（run.ps1 v$($script:ScriptVersion)）===" 'Navy'
+    # Log 檔：程式資料夾下 logs\yyyyMMdd_HHmmss.log，只保留最近 30 份
+    try {
+        $logDir = Join-Path $ScriptDir 'logs'
+        if (-not (Test-Path -LiteralPath $logDir)) {
+            New-Item -ItemType Directory -Path $logDir | Out-Null
+        }
+        $script:logFile = Join-Path $logDir ((Get-Date -Format 'yyyyMMdd_HHmmss') + '.log')
+        Get-ChildItem -LiteralPath $logDir -Filter '*.log' -File |
+            Sort-Object Name -Descending | Select-Object -Skip 29 |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    }
+    catch {
+        $script:logFile = $null
+    }
+
+    Write-Log "=== 開始執行（run.ps1 v$($script:ScriptVersion)）$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ===" 'Navy'
+    if ($script:logFile) { Write-Log "Log 檔：$($script:logFile)" 'Gray' }
     $earlyPythonCmd = Get-PythonCmd
     if ($earlyPythonCmd) {
         $pyVerRaw = Invoke-Python -PythonCmd $earlyPythonCmd -ExtraArgs @($ConvertScript, 'version') 2>&1
@@ -430,6 +456,7 @@ function Invoke-Workflow {
     # （B 的定位就是「待匯入佇列」）。
     $importOk = $true
     $importedCount = 0
+    $skipImportForCalibre = $false
 
     if ($script:cancelRequested) {
         # 使用者中止 -> 不匯入，已轉好的檔案留在 B，下次執行時會一起匯入
@@ -441,13 +468,45 @@ function Invoke-Workflow {
         Write-Log '準備匯入 Calibre...' 'Navy'
         $importedFiles = @(Get-ChildItem -LiteralPath $script:convertedFolder -Filter '*.epub' -File -ErrorAction SilentlyContinue)
 
+        # Calibre 主程式開著時，calibredb 不能安全寫入同一個書庫（Calibre 3.0 起的限制），
+        # 會印警告並回報失敗；而且 Calibre 若設了「自動新增」監看這個資料夾，還會自己把檔案拿走，
+        # 讓 Log 與實際狀態對不上。所以匯入前先確認 Calibre 已關閉。
         if ($importedFiles.Count -gt 0) {
+            while (Get-Process -Name 'calibre' -ErrorAction SilentlyContinue) {
+                Write-Log 'Calibre 主程式正在執行，等待關閉...' 'DarkOrange'
+                $answer = [System.Windows.Forms.MessageBox]::Show(
+                    $script:form,
+                    "Calibre 正在執行中。`n`nCalibre 開著時匯入可能失敗或與它同時寫入書庫。請先關閉 Calibre 再按「重試」。`n`n按「取消」則略過這次匯入，檔案留在轉換完成資料夾，下次執行時會一併匯入。",
+                    '請先關閉 Calibre',
+                    [System.Windows.Forms.MessageBoxButtons]::RetryCancel,
+                    [System.Windows.Forms.MessageBoxIcon]::Warning)
+                if ($answer -ne [System.Windows.Forms.DialogResult]::Retry) {
+                    $skipImportForCalibre = $true
+                    break
+                }
+            }
+        }
+
+        if ($skipImportForCalibre) {
+            $importOk = $false
+            Write-Log "已略過匯入（Calibre 未關閉）。$($importedFiles.Count) 個檔案保留在轉換完成資料夾，下次執行會一併匯入。" 'DarkOrange'
+        }
+        elseif ($importedFiles.Count -gt 0) {
             Write-Log "匯入 $($importedFiles.Count) 個檔案..."
             $importArgs = @('add') + ($importedFiles.FullName) + @('--with-library', $script:libraryPath)
             & $script:calibreDbExe @importArgs 2>&1 | ForEach-Object { Write-Log "  calibredb: $_" 'Gray' }
             if ($LASTEXITCODE -ne 0) {
-                Write-Log 'calibredb 匯入失敗，檔案保留在轉換完成資料夾。' 'Red'
                 $importOk = $false
+                # 不只看結束代碼，實際核對檔案還在不在，Log 只寫事實
+                $stillThere = @($importedFiles | Where-Object { Test-Path -LiteralPath $_.FullName })
+                $gone = $importedFiles.Count - $stillThere.Count
+                Write-Log "calibredb 回報匯入失敗（結束代碼 $LASTEXITCODE）。" 'Red'
+                if ($stillThere.Count -gt 0) {
+                    Write-Log "  $($stillThere.Count) 個檔案仍在轉換完成資料夾，下次執行會再嘗試匯入。" 'Red'
+                }
+                if ($gone -gt 0) {
+                    Write-Log "  另有 $gone 個檔案已不在資料夾（不是本程式刪除的；可能被 Calibre 的「自動新增」取走），請到 Calibre 確認是否已匯入。" 'DarkOrange'
+                }
             }
             else {
                 $importedCount = $importedFiles.Count
@@ -472,7 +531,7 @@ function Invoke-Workflow {
     Write-Log "來源本身損壞、未轉換（留在暫存資料夾供檢查）: $brokenCount 本"
     Write-Log "非壞檔但跳過，如日文書（留在暫存資料夾）: $skipCount 本"
     Write-Log "轉換程式造成損壞（已移到錯誤資料夾，代表程式有問題）: $failCount 本"
-    Write-Log "Calibre 匯入狀態: $(if ($script:cancelRequested) { '已中止，未匯入' } elseif ($importOk) { '成功' } else { '失敗' })"
+    Write-Log "Calibre 匯入狀態: $(if ($script:cancelRequested) { '已中止，未匯入' } elseif ($skipImportForCalibre) { 'Calibre 未關閉，已略過' } elseif ($importOk) { '成功' } else { '失敗' })"
 
     if ($repairedList.Count -gt 0) {
         Write-Log ''
@@ -484,6 +543,11 @@ function Invoke-Workflow {
         Write-Log ''
         Write-Log '問題清單：' 'Navy'
         foreach ($item in $errorList) { Write-Log "  $item" }
+    }
+
+    if ($script:logFile) {
+        Write-Log ''
+        Write-Log "本次 Log 已存檔：$($script:logFile)" 'Gray'
     }
 
     # 只有真的有匯入書才開啟 Calibre
