@@ -101,7 +101,7 @@ spine 正文章節缺檔。缺圖、CSS `url()` 失效、目錄失效連結都�
 
 ## 致謝與引用
 
-- **[epub-s2tw](https://github.com/hungte/epub-s2tw)**(作者 hungte,MIT License):本專案的 EPUB 轉換邏輯改寫自它,
+- **[epub-s2tw](https://github.com/hungte/epub-s2tw)**(作者 Hung-Te Lin (piaip),MIT License):本專案的 EPUB 轉換邏輯改寫自它,
   並新增檔名同步轉換、前後連結完整性驗證、日文假名防誤判與 Calibre 自動匯入。
 - **[OpenCC](https://github.com/BYVoid/OpenCC)**(BYVoid 等人,Apache-2.0):簡繁轉換的詞庫與演算法來源。
 - **[opencc-python-reimplemented](https://github.com/yichen0831/opencc-python)**(Apache-2.0):本專案實際呼叫的純 Python 實作,沿用 OpenCC 詞庫。
@@ -109,4 +109,4 @@ spine 正文章節缺檔。缺圖、CSS `url()` 失效、目錄失效連結都�
 
 ## 授權
 
-本專案以 [MIT License](LICENSE) 釋出。改寫自 epub-s2tw 的部分,原專案同為 MIT License,版權屬原作者。
+本專案以 [MIT License](LICENSE) 釋出。改寫自 epub-s2tw 的部分,原專案同為 MIT License,版權屬原作者 Hung-Te Lin (piaip),其版權聲明已併入 [LICENSE](LICENSE)。
