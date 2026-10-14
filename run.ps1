@@ -1,5 +1,5 @@
 ﻿# ============================================================
-# Version: 1.0.1
+# Version: 1.0.2
 # ============================================================
 # EPUB 簡轉繁 + 匯入 Calibre 主流程
 #
@@ -54,7 +54,7 @@ $ConvertScript = Join-Path $ScriptDir 'convert_epub.py'
 # 版本號顯示在視窗標題，一開視窗就看得到，不用點任何按鈕或捲動記錄——
 # 這樣才能一眼判斷手上這份是不是真的抓到最新版，而不是下載到舊檔案或
 # 半途失敗的殘留（先前已發生過抓到 GitHub 404 錯誤頁的案例，見 27_技術雜記）
-$script:ScriptVersion = '1.0.1'
+$script:ScriptVersion = '1.0.2'
 
 # ---------- 設定檔與環境 ----------
 
@@ -321,6 +321,8 @@ function Invoke-Workflow {
     Write-Log "暫存資料夾內共 $($epubFiles.Count) 個 epub 待處理。" 'Navy'
 
     $okCount = 0
+    $repairedCount = 0
+    $repairedList = New-Object System.Collections.Generic.List[string]
     $skipCount = 0
     $brokenCount = 0
     $failCount = 0
@@ -383,6 +385,12 @@ function Invoke-Workflow {
                 }
                 else {
                     Write-Log '  -> 成功' 'Green'
+                }
+                if ($result.repaired) {
+                    # 來源 zip 目錄索引損毀但內容完整，轉換時已用標準寫法重寫（等於修好）
+                    Write-Log '  -> 來源的 zip 目錄索引原本就損毀（內容完整，已核對），轉換時已一併修復' 'DarkOrange'
+                    $repairedCount++
+                    $repairedList.Add($f.Name)
                 }
                 Move-ToRecycleBin -Path $f.FullName
                 $okCount++
@@ -454,10 +462,19 @@ function Invoke-Workflow {
     Write-Log ''
     Write-Log "$(if ($script:cancelRequested) { '=== 已中止 ===' } else { '=== 執行完成 ===' })" 'Navy'
     Write-Log "轉換成功: $okCount 本" 'Green'
+    if ($repairedCount -gt 0) {
+        Write-Log "  其中 $repairedCount 本來源的 zip 目錄索引原本損毀，已在轉換時修復" 'DarkOrange'
+    }
     Write-Log "來源本身損壞、未轉換（留在暫存資料夾供檢查）: $brokenCount 本"
     Write-Log "非壞檔但跳過，如日文書（留在暫存資料夾）: $skipCount 本"
     Write-Log "轉換程式造成損壞（已移到錯誤資料夾，代表程式有問題）: $failCount 本"
     Write-Log "Calibre 匯入狀態: $(if ($script:cancelRequested) { '已中止，未匯入' } elseif ($importOk) { '成功' } else { '失敗' })"
+
+    if ($repairedList.Count -gt 0) {
+        Write-Log ''
+        Write-Log '已修復目錄索引的書（原始檔案損毀，輸出檔案已是正常結構）：' 'Navy'
+        foreach ($name in $repairedList) { Write-Log "  $name" }
+    }
 
     if ($errorList.Count -gt 0) {
         Write-Log ''

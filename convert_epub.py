@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # ============================================================
-# Version: 1.0.1
+# Version: 1.0.2
 # ============================================================
 """
 EPUB 簡轉繁核心轉換與完整性驗證工具
@@ -43,6 +43,14 @@ EPUB 簡轉繁核心轉換與完整性驗證工具
   python convert_epub.py check <input.epub>
   python convert_epub.py convert <input.epub> <output.epub> [-c s2twp]
 
+v1.0.2 新增「zip 目錄索引損毀自動修復」：有些製作工具產出的 EPUB，檔案內容完整，
+只是檔尾的 central directory 寫壞（例如每筆記錄少 2 個位元組）。Calibre 這類寬鬆
+閱讀器能開，但 Python zipfile／unzip 會直接拒絕。遇到這種情況，改掃檔案開頭的
+本地檔頭逐一取出內容，每個檔案都核對 CRC 與大小，全數通過才算「可修復」；
+轉換時以標準寫法重寫 zip，目錄索引就順便修好了。任何一個檔案核對失敗，或本地檔頭
+也讀不通，仍判定為來源損壞（source_broken），不硬修。來源檔案始終唯讀。
+另外輸出時 mimetype 固定第一個、不壓縮（EPUB OCF 規範）。
+
 退出碼：0 = 成功或跳過（status: ok / skipped），1 = 失敗（status: error）
 """
 
@@ -51,11 +59,13 @@ import os
 import json
 import re
 import zipfile
+import zlib
+import struct
 import posixpath
 from urllib.parse import unquote, urlparse
 
 # 對照 run.ps1 視窗標題的版本號，確認三個檔案抓到的是同一批
-SCRIPT_VERSION = '1.0.1'
+SCRIPT_VERSION = '1.0.2'
 
 try:
     from opencc import OpenCC
@@ -80,6 +90,119 @@ KANA_PATTERN = re.compile(r'[\u3040-\u30FF]')
 HAN_PATTERN = re.compile(r'[\u4E00-\u9FFF]')
 
 TEXT_SCAN_EXTS = ('.xhtml', '.html', '.htm', '.ncx', '.css')
+
+
+class EpubSourceError(Exception):
+    """來源檔案本身讀不了（不是轉換程式造成的）。"""
+
+
+class _Entry:
+    """寬鬆讀取器用的最小 zip entry，欄位名稱對齊 zipfile.ZipInfo 用到的那幾個。"""
+    __slots__ = ('filename', 'date_time', 'external_attr', 'method', 'flags',
+                 'crc', 'csize', 'usize', 'data_start')
+
+
+class LenientZip:
+    """目錄索引壞掉時的備援讀取器：不看 central directory，
+    從檔案開頭依序走過每個本地檔頭（PK\\x03\\x04）取出內容。
+
+    只在「所有檔案都解得開、CRC 與大小全數相符、且走到的終點是 central directory
+    或 EOCD 或剛好檔尾」時才成立，否則丟 EpubSourceError。
+    提供 namelist() / infolist() / read()，跟 check_integrity 等函式用的介面一致。"""
+
+    repaired = True
+
+    def __init__(self, path):
+        with open(path, 'rb') as f:
+            self._buf = f.read()
+        self._entries = []
+        self._by_name = {}
+        self._scan()
+
+    def _scan(self):
+        b = self._buf
+        p = 0
+        while b[p:p + 4] == b'PK\x03\x04':
+            if p + 30 > len(b):
+                raise EpubSourceError('本地檔頭被截斷')
+            (_ver, flags, method, mtime, mdate, crc, csize, usize,
+             fnl, exl) = struct.unpack('<HHHHHIIIHH', b[p + 4:p + 30])
+            if flags & 0x1:
+                raise EpubSourceError('含加密檔案，無法讀取')
+            if flags & 0x8:
+                raise EpubSourceError('本地檔頭沒有大小資訊（data descriptor），無法安全修復')
+            if method not in (0, 8):
+                raise EpubSourceError(f'不支援的壓縮方式 {method}')
+            name_start = p + 30
+            data_start = name_start + fnl + exl
+            data_end = data_start + csize
+            if data_end > len(b):
+                raise EpubSourceError('檔案內容被截斷')
+            raw_name = b[name_start:name_start + fnl]
+            name = raw_name.decode('utf-8' if flags & 0x800 else 'cp437', errors='replace')
+            e = _Entry()
+            e.filename = name
+            e.date_time = ((mdate >> 9) + 1980, (mdate >> 5) & 0xF or 1, mdate & 0x1F or 1,
+                           mtime >> 11, (mtime >> 5) & 0x3F, (mtime & 0x1F) * 2)
+            e.external_attr = 0
+            e.method, e.flags, e.crc, e.csize, e.usize = method, flags, crc, csize, usize
+            e.data_start = data_start
+            # 每個檔案都先完整解開並核對，通過才收進來
+            data = self._decode(e)
+            if (zlib.crc32(data) & 0xFFFFFFFF) != crc or len(data) != usize:
+                raise EpubSourceError(f'檔案內容與記錄的 CRC／大小不符: {name}')
+            self._entries.append(e)
+            self._by_name[name] = e
+            p = data_end
+        tail = b[p:p + 4]
+        if not (tail in (b'PK\x01\x02', b'PK\x05\x06') or p == len(b)):
+            raise EpubSourceError('本地檔頭之後出現無法辨識的資料，可能缺少檔案')
+        if not self._entries:
+            raise EpubSourceError('找不到任何檔案')
+
+    def _decode(self, e):
+        raw = self._buf[e.data_start:e.data_start + e.csize]
+        if e.method == 0:
+            return raw
+        try:
+            return zlib.decompress(raw, -15)
+        except zlib.error as ex:
+            raise EpubSourceError(f'解壓縮失敗: {e.filename}（{ex}）')
+
+    def namelist(self):
+        return [e.filename for e in self._entries]
+
+    def infolist(self):
+        return list(self._entries)
+
+    def read(self, name):
+        return self._decode(self._by_name[name])
+
+    def close(self):
+        self._buf = b''
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+def open_epub(path):
+    """開啟來源 epub：先用標準 zipfile，目錄索引壞掉才退回寬鬆讀取。
+    回傳物件有 repaired 屬性（True = 來源目錄索引損毀，已用寬鬆模式讀出）。
+    兩種方式都失敗丟 EpubSourceError。"""
+    try:
+        zf = zipfile.ZipFile(path, 'r')
+        zf.repaired = False
+        return zf
+    except zipfile.BadZipFile:
+        pass
+    try:
+        return LenientZip(path)
+    except EpubSourceError as ex:
+        raise EpubSourceError(f'不是合法的 zip / epub 檔案，且無法從本地檔頭救回內容（{ex}）')
 
 
 def resolve_ref(base_dir, ref):
@@ -204,7 +327,8 @@ def convert_epub(input_path, output_path, cc_config='s2twp'):
     if OpenCC is None:
         return {'status': 'error', 'reason': 'opencc 套件未安裝，請先執行 install.ps1'}
 
-    with zipfile.ZipFile(input_path, 'r') as zf:
+    with open_epub(input_path) as zf:
+        repaired = bool(getattr(zf, 'repaired', False))
         pre_fatal, pre_nonfatal = check_integrity(zf)
         if pre_fatal:
             # 來源本身就壞到不能讀，不是轉換造成的 —— 不搬到錯誤資料夾，
@@ -238,8 +362,13 @@ def convert_epub(input_path, output_path, cc_config='s2twp'):
             return {'status': 'error', 'reason': '檔名轉換後發生撞名，未執行轉換', 'problems': collisions}
 
         tmp_output = output_path + '.tmp'
-        with zipfile.ZipFile(tmp_output, 'w', zipfile.ZIP_DEFLATED) as zout:
-            for item in zf.infolist():
+        try:
+          with zipfile.ZipFile(tmp_output, 'w', zipfile.ZIP_DEFLATED) as zout:
+            # EPUB OCF 規範：mimetype 必須是第一個 entry 且不壓縮
+            all_items = zf.infolist()
+            ordered_items = ([i for i in all_items if i.filename == 'mimetype'] +
+                             [i for i in all_items if i.filename != 'mimetype'])
+            for item in ordered_items:
                 data = zf.read(item.filename)
                 new_name = name_map[item.filename]
 
@@ -262,16 +391,36 @@ def convert_epub(input_path, output_path, cc_config='s2twp'):
                         pass  # 解不了就當二進位檔原樣保留，不要讓整批失敗
 
                 zi = zipfile.ZipInfo(new_name, date_time=item.date_time)
-                zi.compress_type = zipfile.ZIP_DEFLATED
                 zi.external_attr = item.external_attr
-                zi.flag_bits |= 0x800  # 標記檔名為 UTF-8，避免中文檔名在部分閱讀器顯示異常
+                if new_name == 'mimetype':
+                    zi.compress_type = zipfile.ZIP_STORED
+                else:
+                    zi.compress_type = zipfile.ZIP_DEFLATED
+                    zi.flag_bits |= 0x800  # 標記檔名為 UTF-8，避免中文檔名在部分閱讀器顯示異常
                 zout.writestr(zi, data)
+        except (zipfile.BadZipFile, zlib.error, NotImplementedError, EOFError) as ex:
+            # 讀來源 entry 時失敗（例如標準模式下 CRC 不符）= 來源問題，不是轉換造成
+            if os.path.exists(tmp_output):
+                os.remove(tmp_output)
+            raise EpubSourceError(f'讀取來源檔案內容失敗: {ex}')
+        except BaseException:
+            if os.path.exists(tmp_output):
+                os.remove(tmp_output)
+            raise
 
     # 轉換完成，再驗證一次，並跟轉換前的問題清單比對。
     # 只有「轉換後才出現、轉換前沒有」的問題，才算是轉換程式的責任。
     # 本來就存在的瑕疵（製作工具留下的佔位參照之類）照樣放行，不能怪轉換程式。
-    with zipfile.ZipFile(tmp_output, 'r') as zf2:
-        post_fatal, post_nonfatal = check_integrity(zf2)
+    try:
+        with zipfile.ZipFile(tmp_output, 'r') as zf2:
+            post_fatal, post_nonfatal = check_integrity(zf2)
+    except (zipfile.BadZipFile, zlib.error, NotImplementedError, EOFError, KeyError) as ex:
+        # 輸出檔本身打不開 = 我們寫壞了，這才是轉換程式的責任
+        if os.path.exists(tmp_output):
+            os.remove(tmp_output)
+        return {'status': 'error',
+                'reason': '轉換後的輸出檔案無法開啟（轉換程式造成的損壞），已中止並移除輸出檔案',
+                'problems': [str(ex)]}
 
     # 轉換前的問題訊息裡含有檔名，而檔名本身也會被轉換（簡→繁），
     # 直接用字串比對會把「同一個問題」誤判成新問題，所以先把轉換前的
@@ -287,6 +436,10 @@ def convert_epub(input_path, output_path, cc_config='s2twp'):
 
     os.replace(tmp_output, output_path)
     result = {'status': 'ok'}
+    if repaired:
+        # 來源 zip 目錄索引損毀（內容完整、CRC 全數核對通過），已在重寫時修好；
+        # 由呼叫端（run.ps1）決定怎麼顯示，這裡只回報事實
+        result['repaired'] = True
     if pre_nonfatal:
         result['note'] = f'來源本身有 {len(pre_nonfatal)} 處非致命的失效參照（不影響閱讀，已原樣保留）'
     return result
@@ -305,16 +458,20 @@ def main():
 
     if mode == 'check':
         input_path = sys.argv[2]
+        repaired = False
         try:
-            with zipfile.ZipFile(input_path, 'r') as zf:
+            with open_epub(input_path) as zf:
+                repaired = bool(getattr(zf, 'repaired', False))
                 fatal, nonfatal = check_integrity(zf)
-        except zipfile.BadZipFile:
-            fatal, nonfatal = ['不是合法的 zip / epub 檔案（可能已損毀）'], []
+        except (EpubSourceError, zipfile.BadZipFile, zlib.error, NotImplementedError, EOFError, KeyError) as ex:
+            fatal, nonfatal = [str(ex) or '不是合法的 zip / epub 檔案（可能已損毀）'], []
         if fatal:
             result = {'status': 'source_broken', 'reason': '來源檔案本身結構損壞',
                       'problems': fatal, 'nonfatal': nonfatal}
         else:
             result = {'status': 'ok', 'nonfatal': nonfatal}
+            if repaired:
+                result['repaired'] = True
 
     elif mode == 'convert':
         input_path = sys.argv[2]
@@ -324,8 +481,11 @@ def main():
             cc_config = sys.argv[sys.argv.index('-c') + 1]
         try:
             result = convert_epub(input_path, output_path, cc_config)
-        except zipfile.BadZipFile:
-            result = {'status': 'error', 'reason': '不是合法的 zip / epub 檔案（可能已損毀）'}
+        except (EpubSourceError, zipfile.BadZipFile, zlib.error, NotImplementedError, EOFError, KeyError) as ex:
+            # 來源讀不了（含寬鬆模式也救不回來）= 來源損壞，不是轉換造成的
+            result = {'status': 'source_broken',
+                      'reason': '來源檔案本身結構損壞（轉換前即無法讀取）',
+                      'problems': [str(ex) or '不是合法的 zip / epub 檔案（可能已損毀）']}
 
     elif mode == 'convert_name':
         # 只轉換一段文字（外層檔名主體，不含副檔名），不碰任何檔案。

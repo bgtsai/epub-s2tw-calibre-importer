@@ -1,5 +1,5 @@
 ﻿# ============================================================
-# Version: 1.0.1
+# Version: 1.0.2
 # ============================================================
 # 安裝腳本：檢查/安裝 Python 與 opencc-python-reimplemented，並在腳本所在目錄產生捷徑
 #
@@ -9,7 +9,7 @@
 # 全系統安裝需要系統管理員權限，未以管理員身分執行時會自動重新以管理員身分啟動一次。
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$script:ScriptVersion = '1.0.1'   # 對照 run.ps1 標題列的版本，確認抓到的是同一批檔案
+$script:ScriptVersion = '1.0.2'   # 對照 run.ps1 標題列的版本，確認抓到的是同一批檔案
 $PythonInstallerVersion = '3.12.7'
 $PythonInstallerUrl = "https://www.python.org/ftp/python/$PythonInstallerVersion/python-$PythonInstallerVersion-amd64.exe"
 
