@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # ============================================================
-# Version: 1.0.5
+# Version: 1.0.6
 # ============================================================
 """
 EPUB 簡轉繁核心轉換與完整性驗證工具
@@ -62,10 +62,10 @@ import zipfile
 import zlib
 import struct
 import posixpath
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, quote
 
 # 對照 run.ps1 視窗標題的版本號，確認三個檔案抓到的是同一批
-SCRIPT_VERSION = '1.0.5'
+SCRIPT_VERSION = '1.0.6'
 
 try:
     from opencc import OpenCC
@@ -205,6 +205,27 @@ def open_epub(path):
         return LenientZip(path)
     except EpubSourceError as ex:
         raise EpubSourceError(f'不是合法的 zip / epub 檔案，且無法從本地檔頭救回內容（{ex}）')
+
+
+# 參照路徑若用網址編碼（%XX）寫中文，OpenCC 看到的只是英數字與百分號，不會轉換；
+# 但 zip 內的實際檔名會被轉成繁體，兩邊就對不上（v1.0.6 修正的案例：
+# OPF 寫 Images/%E5%85%AC%E4%BC%97...jpg，實際檔案改名成 公眾號二維碼3.jpg）。
+# 做法：解碼 -> 用同一個轉換器轉 -> 有變化才重新編碼寫回，不含中文的編碼（如 %20）原樣不動。
+ENCODED_REF_PATTERN = re.compile(r'((?:\bhref|\bsrc)\s*=\s*")([^"]*%[0-9A-Fa-f]{2}[^"]*)(")', re.IGNORECASE)
+ENCODED_URL_FUNC_PATTERN = re.compile(r'(url\(\s*[\'"]?)([^\'")]*%[0-9A-Fa-f]{2}[^\'")]*)([\'"]?\s*\))', re.IGNORECASE)
+URL_SAFE_CHARS = "/#?&=:;@!$'()*+,~-._"
+
+
+def convert_encoded_refs(text, converter):
+    def _fix(m):
+        raw = m.group(2)
+        decoded = unquote(raw)
+        converted = converter.convert(decoded)
+        if converted == decoded:
+            return m.group(0)
+        return m.group(1) + quote(converted, safe=URL_SAFE_CHARS) + m.group(3)
+    text = ENCODED_REF_PATTERN.sub(_fix, text)
+    return ENCODED_URL_FUNC_PATTERN.sub(_fix, text)
 
 
 def resolve_ref(base_dir, ref):
@@ -489,7 +510,7 @@ def convert_epub(input_path, output_path, cc_config='s2twp'):
                 elif item.filename.lower().endswith(CONVERT_EXTS):
                     try:
                         text = data.decode('utf-8')
-                        data = converter.convert(text).encode('utf-8')
+                        data = convert_encoded_refs(converter.convert(text), converter).encode('utf-8')
                     except UnicodeDecodeError:
                         pass  # 解不了就當二進位檔原樣保留，不要讓整批失敗
 
