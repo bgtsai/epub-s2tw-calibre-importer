@@ -1,3 +1,4 @@
 config.ini
 *.epub.tmp
 logs/
+__pycache__/
